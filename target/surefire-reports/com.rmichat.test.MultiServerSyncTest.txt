@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: com.rmichat.test.MultiServerSyncTest
+-------------------------------------------------------------------------------
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 5.801 s -- in com.rmichat.test.MultiServerSyncTest

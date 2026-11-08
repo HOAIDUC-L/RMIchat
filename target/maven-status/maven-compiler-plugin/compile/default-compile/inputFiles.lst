@@ -1,0 +1,13 @@
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/client/ChatClientCallbackImpl.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/client/ChatClientGUI.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/client/ClientMain.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/common/ChatMessage.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/common/Constants.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/database/DatabaseManager.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/interfaces/ChatClientCallback.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/interfaces/ChatServerInterface.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/interfaces/ServerSyncInterface.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/server/ChatServerImpl.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/server/ServerAdminGUI.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/server/ServerEventListener.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/server/ServerMain.java
