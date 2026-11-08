@@ -453,8 +453,25 @@ public class ServerAdminGUI extends JFrame implements ServerEventListener {
             modelDbMessages.setRowCount(0);
             List<ChatMessage> list = dbManager.getAllMessages();
             for (ChatMessage m : list) {
-                String target = m.isPrivate() ? "🔒 @" + m.getRecipient() : "🌐 Phòng chung";
-                String typeLabel = m.isPrivate() ? "RIÊNG TƯ" : m.getType().name();
+                String target;
+                if (m.isGroup()) {
+                    target = "👥 [" + (m.getGroupName() != null ? m.getGroupName() : m.getGroupId()) + "]";
+                } else if (m.isPrivate()) {
+                    target = "🔒 @" + m.getRecipient();
+                } else {
+                    target = "🌐 Phòng chung";
+                }
+
+                String typeLabel;
+                if (m.isMedia()) {
+                    typeLabel = m.getType().name() + " (" + m.getFormattedFileSize() + ")";
+                } else if (m.isGroup()) {
+                    typeLabel = "NHÓM";
+                } else if (m.isPrivate()) {
+                    typeLabel = "RIÊNG TƯ";
+                } else {
+                    typeLabel = m.getType().name();
+                }
                 modelDbMessages.addRow(new Object[]{
                         m.getMessageId().substring(0, Math.min(8, m.getMessageId().length())) + "...",
                         m.getFormattedTime(),

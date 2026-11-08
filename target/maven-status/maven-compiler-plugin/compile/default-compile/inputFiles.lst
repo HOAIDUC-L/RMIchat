@@ -1,6 +1,9 @@
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/client/AudioRecorderDialog.java
 /home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/client/ChatClientCallbackImpl.java
 /home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/client/ChatClientGUI.java
 /home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/client/ClientMain.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/client/ImagePreviewDialog.java
+/home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/common/ChatGroup.java
 /home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/common/ChatMessage.java
 /home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/common/Constants.java
 /home/hduc/IdeaProjects/RMIchat/src/main/java/com/rmichat/database/DatabaseManager.java

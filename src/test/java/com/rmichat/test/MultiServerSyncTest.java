@@ -1,5 +1,6 @@
 package com.rmichat.test;
 
+import com.rmichat.common.ChatGroup;
 import com.rmichat.common.ChatMessage;
 import com.rmichat.common.Constants;
 import com.rmichat.interfaces.ChatClientCallback;
@@ -68,7 +69,9 @@ public class MultiServerSyncTest {
         private final String name;
         final List<ChatMessage> receivedMessages = Collections.synchronizedList(new ArrayList<>());
         final List<List<String>> userListUpdates = Collections.synchronizedList(new ArrayList<>());
+        final List<List<ChatGroup>> groupListUpdates = Collections.synchronizedList(new ArrayList<>());
         CountDownLatch messageLatch;
+        CountDownLatch groupLatch;
 
         MockClientCallback(String name) throws Exception {
             super();
@@ -77,6 +80,10 @@ public class MultiServerSyncTest {
 
         void setMessageLatch(CountDownLatch latch) {
             this.messageLatch = latch;
+        }
+
+        void setGroupLatch(CountDownLatch latch) {
+            this.groupLatch = latch;
         }
 
         @Override
@@ -90,6 +97,14 @@ public class MultiServerSyncTest {
         @Override
         public void onUserListUpdated(List<String> onlineUsers) {
             userListUpdates.add(new ArrayList<>(onlineUsers));
+        }
+
+        @Override
+        public void onGroupListUpdated(List<ChatGroup> userGroups) {
+            groupListUpdates.add(new ArrayList<>(userGroups));
+            if (groupLatch != null) {
+                groupLatch.countDown();
+            }
         }
 
         @Override
@@ -229,7 +244,94 @@ public class MultiServerSyncTest {
                 .anyMatch(m -> "Chào Charlie trên cùng Server 1".equals(m.getContent()));
         assertFalse(bobLeakedLocal, "Bob (Server 2) không được nhận tin riêng nội bộ Server 1!");
 
-        // 7. Test Ngắt kết nối (Clean unregister)
+        // 7. TEST GỬI ĐA PHƯƠNG TIỆN (MEDIA TRANSFER: ẢNH & FILE)
+        // a) Alice (Server 1) gửi ảnh cho Bob (Server 2)
+        CountDownLatch latchImgBob = new CountDownLatch(1);
+        client2.setMessageLatch(latchImgBob);
+
+        byte[] fakeImageData = new byte[]{ (byte)0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4, 5 };
+        ChatMessage imgMsg = ChatMessage.createImage("Alice", "Bob", null, null, "photo.png", fakeImageData, "Bức ảnh đẹp", "Server 1");
+        s1Stub.sendMessage(imgMsg);
+
+        boolean bobGotImg = latchImgBob.await(3, TimeUnit.SECONDS);
+        assertTrue(bobGotImg, "Bob trên Server 2 phải nhận được tin nhắn ảnh từ Alice");
+        ChatMessage bobLastImg = client2.receivedMessages.get(client2.receivedMessages.size() - 1);
+        assertEquals(ChatMessage.MessageType.IMAGE, bobLastImg.getType());
+        assertEquals("photo.png", bobLastImg.getFileName());
+        assertArrayEquals(fakeImageData, bobLastImg.getFileData());
+
+        // b) Alice gửi file tài liệu chung lên phòng chat
+        CountDownLatch latchFileBob = new CountDownLatch(1);
+        CountDownLatch latchFileCharlie = new CountDownLatch(1);
+        client2.setMessageLatch(latchFileBob);
+        client3.setMessageLatch(latchFileCharlie);
+
+        byte[] fakeDocData = "Báo cáo Đồ án Lập trình mạng".getBytes();
+        ChatMessage fileMsg = ChatMessage.createFile("Alice", null, null, null, "baocao.pdf", fakeDocData, "File báo cáo", "Server 1");
+        s1Stub.sendMessage(fileMsg);
+
+        boolean bobGotFile = latchFileBob.await(3, TimeUnit.SECONDS);
+        boolean charlieGotFile = latchFileCharlie.await(3, TimeUnit.SECONDS);
+        assertTrue(bobGotFile && charlieGotFile, "Cả Bob (Server 2) và Charlie (Server 1) đều phải nhận được file gửi chung");
+
+        // 8. TEST NHÓM CHAT (CUSTOM GROUP CHAT)
+        // a) Alice (Server 1) tạo "Nhóm Nghiên Cứu" với thành viên ban đầu là Bob (Server 2)
+        CountDownLatch latchGroupBob = new CountDownLatch(1);
+        client2.setGroupLatch(latchGroupBob);
+
+        ChatGroup createdGroup = s1Stub.createGroup("Nhóm Nghiên Cứu", "Alice", List.of("Bob"));
+        assertNotNull(createdGroup, "Tạo nhóm phải trả về đối tượng ChatGroup");
+        assertTrue(createdGroup.isMember("Alice") && createdGroup.isMember("Bob"));
+
+        // Chờ đồng bộ danh sách nhóm sang Server 2
+        boolean bobGroupUpdated = latchGroupBob.await(3, TimeUnit.SECONDS);
+        assertTrue(bobGroupUpdated, "Bob trên Server 2 phải nhận được callback cập nhật danh sách nhóm!");
+
+        List<ChatGroup> bobGroups = s2Stub.getGroupsForUser("Bob");
+        assertTrue(bobGroups.stream().anyMatch(g -> g.getGroupId().equals(createdGroup.getGroupId())),
+                "Bob trên Server 2 phải có 'Nhóm Nghiên Cứu' trong danh sách nhóm của mình!");
+
+        // b) Alice gửi tin nhắn vào nhóm
+        CountDownLatch latchGroupMsgBob = new CountDownLatch(1);
+        client2.setMessageLatch(latchGroupMsgBob);
+
+        ChatMessage groupMsg = ChatMessage.createGroupChat("Alice", createdGroup.getGroupId(), createdGroup.getGroupName(),
+                "Xin chào các thành viên trong nhóm!", "Server 1");
+        s1Stub.sendMessage(groupMsg);
+
+        // Bob (thành viên nhóm ở Server 2) phải nhận được
+        boolean bobGotGroupMsg = latchGroupMsgBob.await(3, TimeUnit.SECONDS);
+        assertTrue(bobGotGroupMsg, "Bob (thành viên nhóm ở Server 2) phải nhận được tin nhắn nhóm!");
+
+        // Charlie (ở Server 1 nhưng KHÔNG thuộc nhóm) TUYỆT ĐỐI KHÔNG nhận được tin nhắn này!
+        boolean charlieLeakedGroupMsg = client3.receivedMessages.stream()
+                .anyMatch(m -> "Xin chào các thành viên trong nhóm!".equals(m.getContent()));
+        assertFalse(charlieLeakedGroupMsg, "Charlie không thuộc nhóm nên tuyệt đối không được nhận tin nhóm!");
+
+        // c) Alice mời Charlie vào nhóm
+        CountDownLatch latchInviteCharlie = new CountDownLatch(1);
+        client3.setGroupLatch(latchInviteCharlie);
+
+        boolean inviteSuccess = s1Stub.inviteToGroup(createdGroup.getGroupId(), "Alice", "Charlie");
+        assertTrue(inviteSuccess, "Mời Charlie vào nhóm phải thành công!");
+
+        boolean charlieGroupUpdated = latchInviteCharlie.await(3, TimeUnit.SECONDS);
+        assertTrue(charlieGroupUpdated, "Charlie phải nhận được callback cập nhật nhóm sau khi được mời!");
+
+        // d) Giờ Alice gửi tin nhắn nhóm thứ 2: Cả Bob và Charlie đều phải nhận được
+        CountDownLatch latchMsg2Bob = new CountDownLatch(1);
+        CountDownLatch latchMsg2Charlie = new CountDownLatch(1);
+        client2.setMessageLatch(latchMsg2Bob);
+        client3.setMessageLatch(latchMsg2Charlie);
+
+        ChatMessage groupMsg2 = ChatMessage.createGroupChat("Alice", createdGroup.getGroupId(), createdGroup.getGroupName(),
+                "Chào mừng Charlie đã tham gia nhóm!", "Server 1");
+        s1Stub.sendMessage(groupMsg2);
+
+        assertTrue(latchMsg2Bob.await(3, TimeUnit.SECONDS), "Bob phải nhận được tin nhóm thứ 2");
+        assertTrue(latchMsg2Charlie.await(3, TimeUnit.SECONDS), "Charlie (đã vào nhóm) giờ phải nhận được tin nhóm!");
+
+        // 9. Test Ngắt kết nối (Clean unregister)
         s1Stub.unregisterClient("Charlie");
         s1Stub.unregisterClient("Alice");
         Thread.sleep(1000);

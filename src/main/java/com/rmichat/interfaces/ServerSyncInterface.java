@@ -1,5 +1,6 @@
 package com.rmichat.interfaces;
 
+import com.rmichat.common.ChatGroup;
 import com.rmichat.common.ChatMessage;
 import java.rmi.Remote;
 import java.rmi.RemoteException;
@@ -12,7 +13,7 @@ import java.util.List;
 public interface ServerSyncInterface extends Remote {
 
     /**
-     * Nhận tin nhắn được đồng bộ từ Server đối tác.
+     * Nhận tin nhắn được đồng bộ từ Server đối tác (hỗ trợ cả Chat chung, Chat riêng, Chat nhóm, Media).
      * Cực kỳ quan trọng: Hàm này xử lý lưu trữ và chuyển tiếp cho các Client thuộc Server này,
      * tuyệt đối KHÔNG gọi ngược lại Server đối tác để tránh vòng lặp vô hạn (Infinite Loop).
      * @param message Tin nhắn cần đồng bộ
@@ -49,4 +50,31 @@ public interface ServerSyncInterface extends Remote {
      * @throws RemoteException nếu xảy ra lỗi RMI
      */
     List<String> getLocalOnlineUsers() throws RemoteException;
+
+    // =========================================================================
+    // ĐỒNG BỘ NHÓM CHAT (GROUP SYNC)
+    // =========================================================================
+
+    /**
+     * Đồng bộ sự kiện tạo nhóm mới từ Server đối tác.
+     * @param group Đối tượng ChatGroup được tạo
+     * @throws RemoteException nếu xảy ra lỗi RMI
+     */
+    void syncGroupCreate(ChatGroup group) throws RemoteException;
+
+    /**
+     * Đồng bộ sự kiện cập nhật thành viên nhóm (mời thêm, rời nhóm) từ Server đối tác.
+     * @param group Đối tượng ChatGroup sau khi cập nhật
+     * @param actionUser Người thực hiện thao tác
+     * @param actionType Loại thao tác ("INVITE", "LEAVE")
+     * @throws RemoteException nếu xảy ra lỗi RMI
+     */
+    void syncGroupUpdate(ChatGroup group, String actionUser, String actionType) throws RemoteException;
+
+    /**
+     * Yêu cầu lấy toàn bộ danh sách nhóm chat khi một server vừa bật lên hoặc vừa tái kết nối.
+     * @return Danh sách các nhóm chat
+     * @throws RemoteException nếu xảy ra lỗi RMI
+     */
+    List<ChatGroup> requestFullGroups() throws RemoteException;
 }

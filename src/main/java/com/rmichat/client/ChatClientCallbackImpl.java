@@ -1,5 +1,6 @@
 package com.rmichat.client;
 
+import com.rmichat.common.ChatGroup;
 import com.rmichat.common.ChatMessage;
 import com.rmichat.interfaces.ChatClientCallback;
 
@@ -18,6 +19,7 @@ public class ChatClientCallbackImpl extends UnicastRemoteObject implements ChatC
     public interface ClientCallbackListener {
         void onMessageReceived(ChatMessage message);
         void onUserListChanged(List<String> users);
+        void onGroupListChanged(List<ChatGroup> groups);
         void onNotification(String notice);
     }
 
@@ -44,6 +46,13 @@ public class ChatClientCallbackImpl extends UnicastRemoteObject implements ChatC
     public void onUserListUpdated(List<String> onlineUsers) throws RemoteException {
         if (listener != null) {
             SwingUtilities.invokeLater(() -> listener.onUserListChanged(onlineUsers));
+        }
+    }
+
+    @Override
+    public void onGroupListUpdated(List<ChatGroup> userGroups) throws RemoteException {
+        if (listener != null) {
+            SwingUtilities.invokeLater(() -> listener.onGroupListChanged(userGroups));
         }
     }
 

@@ -1,5 +1,6 @@
 package com.rmichat.interfaces;
 
+import com.rmichat.common.ChatGroup;
 import com.rmichat.common.ChatMessage;
 import java.rmi.Remote;
 import java.rmi.RemoteException;
@@ -13,7 +14,7 @@ import java.util.List;
 public interface ChatClientCallback extends Remote {
 
     /**
-     * Server gọi khi có tin nhắn mới (tin nhắn chat, người dùng vào/ra, thông báo hệ thống).
+     * Server gọi khi có tin nhắn mới (tin nhắn chat, tin nhắn riêng, tin nhắn nhóm, hình ảnh, tệp tin, âm thanh...).
      * @param message Đối tượng tin nhắn
      * @throws RemoteException nếu xảy ra lỗi mạng RMI
      */
@@ -25,6 +26,13 @@ public interface ChatClientCallback extends Remote {
      * @throws RemoteException nếu xảy ra lỗi mạng RMI
      */
     void onUserListUpdated(List<String> onlineUsers) throws RemoteException;
+
+    /**
+     * Server gọi khi danh sách nhóm chat của người dùng này có sự cập nhật (tạo nhóm mới, được mời, rời nhóm).
+     * @param userGroups Danh sách các nhóm chat mà người dùng đang tham gia
+     * @throws RemoteException nếu xảy ra lỗi mạng RMI
+     */
+    void onGroupListUpdated(List<ChatGroup> userGroups) throws RemoteException;
 
     /**
      * Server gọi khi có thông báo trạng thái đặc biệt từ Server.

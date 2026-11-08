@@ -1,5 +1,6 @@
 package com.rmichat.server;
 
+import com.rmichat.common.ChatGroup;
 import com.rmichat.common.ChatMessage;
 import com.rmichat.common.Constants;
 import com.rmichat.interfaces.ChatClientCallback;
@@ -37,6 +38,9 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
     // Tập hợp các ID tin nhắn đã được xử lý - Dùng để chống xử lý trùng lặp và CHỐNG VÒNG LẶP ĐỒNG BỘ VÔ HẠN
     private final Set<String> processedMessageIds = ConcurrentHashMap.newKeySet();
 
+    // Danh sách các Nhóm Chat trong hệ thống: groupId -> ChatGroup
+    private final ConcurrentHashMap<String, ChatGroup> groups = new ConcurrentHashMap<>();
+
     // Stub tham chiếu tới Server đối tác
     private volatile ServerSyncInterface partnerSyncStub = null;
     private volatile boolean isPartnerConnected = false;
@@ -69,6 +73,13 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
             processedMessageIds.add(msg.getMessageId());
         }
         System.out.printf("[%s] [DATABASE] Đã nạp %d tin nhắn từ SQLite vào cache.%n", serverId, savedMessages.size());
+
+        // Nạp danh sách Nhóm Chat từ SQLite vào RAM
+        List<ChatGroup> savedGroups = dbManager.getAllGroups();
+        for (ChatGroup g : savedGroups) {
+            groups.put(g.getGroupId(), g);
+        }
+        System.out.printf("[%s] [DATABASE] Đã nạp %d nhóm chat từ SQLite vào cache.%n", serverId, savedGroups.size());
 
         // Khởi động luồng nền định kỳ kiểm tra / kết nối lại với Server đối tác
         startPartnerConnectionMonitor();
@@ -106,7 +117,11 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
         return partnerServerId;
     }
 
-    public ConcurrentHashMap<String, ChatClientCallback> getLocalClients() {
+    public boolean isPartnerConnected() {
+        return isPartnerConnected;
+    }
+
+    public Map<String, ChatClientCallback> getLocalClients() {
         return localClients;
     }
 
@@ -114,8 +129,28 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
         return remoteOnlineUsers;
     }
 
+    public Map<String, ChatGroup> getGroupsMap() {
+        return groups;
+    }
+
+    public int getLocalClientCount() {
+        return localClients.size();
+    }
+
+    public int getRemoteUserCount() {
+        return remoteOnlineUsers.size();
+    }
+
+    public int getTotalMessageCount() {
+        return chatHistory.size();
+    }
+
+    public int getProcessedMessageIdCount() {
+        return processedMessageIds.size();
+    }
+
     // =========================================================================
-    // IMPLEMENTATION: ChatServerInterface (Client gọi Server)
+    // IMPLEMENTATION: ChatServerInterface (Client gọi lên Server)
     // =========================================================================
 
     @Override
@@ -142,9 +177,11 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
             l.onUserJoined(username, serverId, now);
         }
 
-        // Gửi lịch sử chat trước đó về cho client vừa kết nối
+        // Gửi thông báo chào mừng tới client vừa kết nối
         try {
             callback.onServerNotification(String.format("Chào mừng %s đến với %s! Hệ thống sẵn sàng.", username, serverId));
+            // Đẩy danh sách nhóm chat của người dùng này về giao diện
+            callback.onGroupListUpdated(getGroupsForUser(username));
         } catch (RemoteException e) {
             System.err.printf("[%s] Lỗi gửi thông báo chào mừng tới %s%n", serverId, username);
         }
@@ -168,12 +205,10 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
         if (username == null) return;
         username = username.trim();
         ChatClientCallback removed = localClients.remove(username);
-
         if (removed != null) {
             System.out.printf("[%s] [CLIENT LEAVE] '%s' vừa ngắt kết nối. Còn lại: %d%n",
                     serverId, username, localClients.size());
 
-            // Ghi nhật ký vào SQLite & Đẩy sự kiện sang Admin GUI
             dbManager.logActivity(username, "ĐĂNG XUẤT", serverId);
             long now = System.currentTimeMillis();
             for (ServerEventListener l : eventListeners) {
@@ -215,7 +250,40 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
             l.onMessageEvent(message);
         }
 
-        if (message.isPrivate()) {
+        if (message.isGroup()) {
+            // --- XỬ LÝ TIN NHẮN NHÓM CHAT (GROUP CHAT) ---
+            String groupId = message.getGroupId();
+            ChatGroup group = groups.get(groupId);
+            if (group == null || !group.isMember(message.getSender())) {
+                ChatClientCallback senderCb = localClients.get(message.getSender());
+                if (senderCb != null) {
+                    try {
+                        senderCb.onServerNotification("Lỗi: Nhóm không tồn tại hoặc bạn không còn là thành viên của nhóm này.");
+                    } catch (RemoteException ignored) {}
+                }
+                return;
+            }
+
+            System.out.printf("[%s] [GROUP CHAT] [%s] từ %s: %s%n",
+                    serverId, group.getGroupName(), message.getSender(), message.getContent());
+
+            // 1. Phân phối cho tất cả thành viên trong nhóm đang kết nối cục bộ tại Server này
+            for (String member : group.getMembers()) {
+                ChatClientCallback cb = localClients.get(member);
+                if (cb != null) {
+                    try {
+                        cb.onReceiveMessage(message);
+                    } catch (RemoteException e) {
+                        handleDeadClient(member);
+                    }
+                }
+            }
+
+            // 2. Đồng bộ sang Server đối tác qua RMI (đối tác sẽ chỉ phân phối cho thành viên nhóm bên họ)
+            syncToPartner(message);
+
+        } else if (message.isPrivate()) {
+            // --- XỬ LÝ TIN NHẮN RIÊNG TƯ (1-1 / WHISPER) ---
             String recipient = message.getRecipient();
             System.out.printf("[%s] [PRIVATE CHAT] từ %s tới %s: %s%n",
                     serverId, message.getSender(), recipient, message.getContent());
@@ -253,7 +321,7 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
                 }
             }
         } else {
-            // Tin nhắn phòng chung (Broadcast)
+            // --- XỬ LÝ TIN NHẮN PHÒNG CHUNG (PUBLIC BROADCAST) ---
             System.out.printf("[%s] [LOCAL CHAT] từ %s: %s%n", serverId, message.getSender(), message.getContent());
 
             // Đẩy tin nhắn tới tất cả client đang kết nối tại Server này (RMI Callback)
@@ -277,6 +345,125 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
         synchronized (chatHistory) {
             return new ArrayList<>(chatHistory);
         }
+    }
+
+    // =========================================================================
+    // QUẢN LÝ NHÓM CHAT (GROUP CHAT METHODS)
+    // =========================================================================
+
+    @Override
+    public ChatGroup createGroup(String groupName, String creator, List<String> initialMembers) throws RemoteException {
+        if (groupName == null || groupName.trim().isEmpty() || creator == null) return null;
+        ChatGroup group = new ChatGroup(UUID.randomUUID().toString(), groupName.trim(), creator.trim(), initialMembers, System.currentTimeMillis());
+        groups.put(group.getGroupId(), group);
+        dbManager.saveGroup(group);
+        dbManager.logActivity(creator, "TẠO NHÓM: " + groupName, serverId);
+        System.out.printf("[%s] [TẠO NHÓM] '%s' tạo nhóm '%s' (ID: %s, Thành viên: %d)%n",
+                serverId, creator, groupName, group.getGroupId(), group.getMemberCount());
+
+        // Cập nhật danh sách nhóm cho các thành viên cục bộ
+        broadcastGroupListToMembers(group);
+
+        // Đồng bộ tạo nhóm sang Server đối tác
+        if (partnerSyncStub != null) {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    partnerSyncStub.syncGroupCreate(group);
+                } catch (RemoteException e) {
+                    System.err.printf("[%s] Lỗi đồng bộ tạo nhóm sang đối tác: %s%n", serverId, e.getMessage());
+                }
+            });
+        }
+
+        // Gửi tin nhắn chào mừng trong nhóm
+        ChatMessage welcomeMsg = ChatMessage.createGroupChat("HỆ THỐNG", group.getGroupId(), group.getGroupName(),
+                String.format("Nhóm '%s' đã được tạo bởi %s.", group.getGroupName(), creator), serverId);
+        sendMessage(welcomeMsg);
+
+        return group;
+    }
+
+    @Override
+    public boolean inviteToGroup(String groupId, String inviter, String targetUser) throws RemoteException {
+        if (groupId == null || targetUser == null) return false;
+        ChatGroup group = groups.get(groupId);
+        if (group == null) return false;
+        if (group.isMember(targetUser)) return false;
+
+        group.addMember(targetUser);
+        dbManager.addGroupMember(groupId, targetUser);
+        dbManager.logActivity(inviter, "MỜI VÀO NHÓM: " + targetUser, serverId);
+        System.out.printf("[%s] [MỜI NHÓM] '%s' mời '%s' vào nhóm '%s'%n",
+                serverId, inviter, targetUser, group.getGroupName());
+
+        broadcastGroupListToMembers(group);
+
+        if (partnerSyncStub != null) {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    partnerSyncStub.syncGroupUpdate(group, inviter, "INVITE");
+                } catch (RemoteException e) {
+                    System.err.printf("[%s] Lỗi đồng bộ cập nhật nhóm sang đối tác: %s%n", serverId, e.getMessage());
+                }
+            });
+        }
+
+        ChatMessage inviteNotice = ChatMessage.createGroupChat("HỆ THỐNG", group.getGroupId(), group.getGroupName(),
+                String.format("%s đã mời %s vào nhóm.", inviter, targetUser), serverId);
+        sendMessage(inviteNotice);
+
+        return true;
+    }
+
+    @Override
+    public boolean leaveGroup(String groupId, String username) throws RemoteException {
+        if (groupId == null || username == null) return false;
+        ChatGroup group = groups.get(groupId);
+        if (group == null || !group.isMember(username)) return false;
+
+        group.removeMember(username);
+        dbManager.removeGroupMember(groupId, username);
+        dbManager.logActivity(username, "RỜI NHÓM: " + group.getGroupName(), serverId);
+        System.out.printf("[%s] [RỜI NHÓM] '%s' đã rời khỏi nhóm '%s'%n",
+                serverId, username, group.getGroupName());
+
+        // Cập nhật cho người rời nhóm (để nhóm biến mất khỏi danh sách của họ)
+        broadcastGroupListToUser(username);
+        // Cập nhật cho các thành viên còn lại
+        broadcastGroupListToMembers(group);
+
+        if (partnerSyncStub != null) {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    partnerSyncStub.syncGroupUpdate(group, username, "LEAVE");
+                } catch (RemoteException e) {
+                    System.err.printf("[%s] Lỗi đồng bộ rời nhóm sang đối tác: %s%n", serverId, e.getMessage());
+                }
+            });
+        }
+
+        ChatMessage leaveNotice = ChatMessage.createGroupChat("HỆ THỐNG", group.getGroupId(), group.getGroupName(),
+                String.format("%s đã rời khỏi nhóm.", username), serverId);
+        sendMessage(leaveNotice);
+
+        return true;
+    }
+
+    @Override
+    public List<ChatGroup> getGroupsForUser(String username) throws RemoteException {
+        if (username == null) return Collections.emptyList();
+        List<ChatGroup> result = new ArrayList<>();
+        for (ChatGroup g : groups.values()) {
+            if (g.isMember(username)) {
+                result.add(g);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public ChatGroup getGroup(String groupId) throws RemoteException {
+        return groupId != null ? groups.get(groupId) : null;
     }
 
     // =========================================================================
@@ -310,7 +497,23 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
             l.onMessageEvent(message);
         }
 
-        if (message.isPrivate()) {
+        if (message.isGroup()) {
+            // Tin nhắn nhóm từ đối tác: chỉ chuyển tiếp DUY NHẤT cho các thành viên nhóm ở server này
+            String groupId = message.getGroupId();
+            ChatGroup group = groups.get(groupId);
+            if (group != null) {
+                for (String member : group.getMembers()) {
+                    ChatClientCallback cb = localClients.get(member);
+                    if (cb != null) {
+                        try {
+                            cb.onReceiveMessage(message);
+                        } catch (RemoteException e) {
+                            handleDeadClient(member);
+                        }
+                    }
+                }
+            }
+        } else if (message.isPrivate()) {
             // Tin nhắn riêng tư từ đối tác: chỉ chuyển tiếp DUY NHẤT cho người nhận
             String recipient = message.getRecipient();
             ChatClientCallback recCb = localClients.get(recipient);
@@ -353,6 +556,34 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
     }
 
     @Override
+    public void syncGroupCreate(ChatGroup group) throws RemoteException {
+        if (group == null) return;
+        groups.put(group.getGroupId(), group);
+        dbManager.saveGroup(group);
+        System.out.printf("[%s] [SYNC NHẬN TẠO NHÓM] Nhóm '%s' (ID: %s)%n",
+                serverId, group.getGroupName(), group.getGroupId());
+        broadcastGroupListToMembers(group);
+    }
+
+    @Override
+    public void syncGroupUpdate(ChatGroup group, String actionUser, String actionType) throws RemoteException {
+        if (group == null) return;
+        groups.put(group.getGroupId(), group);
+        dbManager.saveGroup(group);
+        System.out.printf("[%s] [SYNC NHẬN CẬP NHẬT NHÓM] Nhóm '%s' bởi %s (%s)%n",
+                serverId, group.getGroupName(), actionUser, actionType);
+        broadcastGroupListToMembers(group);
+        if ("LEAVE".equals(actionType) && actionUser != null) {
+            broadcastGroupListToUser(actionUser);
+        }
+    }
+
+    @Override
+    public List<ChatGroup> requestFullGroups() throws RemoteException {
+        return new ArrayList<>(groups.values());
+    }
+
+    @Override
     public boolean ping() throws RemoteException {
         return true;
     }
@@ -381,6 +612,25 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
                 l.onMessageEvent(msg);
             }
             broadcastToLocalClients(msg);
+        }
+    }
+
+    private void broadcastGroupListToUser(String username) {
+        if (username == null) return;
+        ChatClientCallback cb = localClients.get(username);
+        if (cb != null) {
+            try {
+                cb.onGroupListUpdated(getGroupsForUser(username));
+            } catch (RemoteException e) {
+                handleDeadClient(username);
+            }
+        }
+    }
+
+    private void broadcastGroupListToMembers(ChatGroup group) {
+        if (group == null) return;
+        for (String member : group.getMembers()) {
+            broadcastGroupListToUser(member);
         }
     }
 
@@ -438,13 +688,17 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
         long now = System.currentTimeMillis();
         dbManager.logActivity(username, "MẤT KẾT NỐI", serverId);
         for (ServerEventListener l : eventListeners) {
-            l.onUserLeft(username, serverId, "Mất kết nối đột ngột", now);
+            l.onUserLeft(username, serverId, "Mất kết nối", now);
         }
 
+        // Báo cho các client khác
         ChatMessage leaveMsg = ChatMessage.createLeave(username, serverId);
         recordAndBroadcastLocal(leaveMsg);
+
+        // Báo cho Server đối tác
         syncToPartner(leaveMsg);
         syncUserStatusToPartner(username, false);
+
         broadcastUserList();
     }
 
@@ -500,7 +754,7 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
     /**
      * Quản lý trạng thái kết nối với Server đối tác:
      * Định kỳ thử kết nối lại nếu chưa có Stub hoặc bị đứt liên lạc.
-     * Khi kết nối thành công, đồng bộ lại lịch sử tin nhắn và danh sách user.
+     * Khi kết nối thành công, đồng bộ lại lịch sử tin nhắn, nhóm chat và danh sách user.
      */
     private void startPartnerConnectionMonitor() {
         scheduler.scheduleWithFixedDelay(() -> {
@@ -583,6 +837,28 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
                 remoteOnlineUsers.addAll(partnerUsers);
             }
             broadcastUserList();
+
+            // 3. Đồng bộ danh sách Nhóm Chat
+            List<ChatGroup> partnerGroups = stub.requestFullGroups();
+            if (partnerGroups != null) {
+                for (ChatGroup pg : partnerGroups) {
+                    ChatGroup localG = groups.get(pg.getGroupId());
+                    if (localG == null) {
+                        groups.put(pg.getGroupId(), pg);
+                        dbManager.saveGroup(pg);
+                        broadcastGroupListToMembers(pg);
+                    } else {
+                        // Hợp nhất thành viên
+                        for (String m : pg.getMembers()) {
+                            if (localG.addMember(m)) {
+                                dbManager.addGroupMember(localG.getGroupId(), m);
+                            }
+                        }
+                        broadcastGroupListToMembers(localG);
+                    }
+                }
+            }
+
         } catch (Exception e) {
             System.err.printf("[%s] Lỗi khi nạp dữ liệu bù đắp từ đối tác: %s%n", serverId, e.getMessage());
         }
@@ -620,29 +896,27 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
             try {
                 unregisterClient(username);
             } catch (Exception ignored) {}
-            dbManager.logActivity(username, "BỊ KICK", serverId);
-            for (ServerEventListener l : eventListeners) {
-                l.onUserLeft(username, serverId, "Bị Admin kick", System.currentTimeMillis());
-            }
+            dbManager.logActivity(username, "BỊ KICK BỞI ADMIN", serverId);
+            System.out.printf("[%s] [ADMIN KICK] Quản trị viên đã kick user '%s'%n", serverId, username);
         }
     }
 
     /**
-     * Phát thông báo khẩn từ Quản trị viên tới toàn bộ Client ở cả 2 Server.
+     * Quản trị viên phát thanh thông báo khẩn tới toàn bộ Client ở cả 2 Server.
      */
-    public void broadcastAdminAnnouncement(String content) {
-        if (content == null || content.trim().isEmpty()) return;
-        ChatMessage adminMsg = ChatMessage.createSystem(
-                "[THÔNG BÁO QUẢN TRỊ VIÊN - " + serverId + "]: " + content.trim(), serverId);
+    public void broadcastAdminAnnouncement(String notice) {
+        if (notice == null || notice.trim().isEmpty()) return;
+        ChatMessage adminMsg = new ChatMessage("ADMIN (" + serverId + ")", notice.trim(),
+                ChatMessage.MessageType.SYSTEM, serverId);
         try {
             sendMessage(adminMsg);
-        } catch (Exception e) {
-            System.err.println("Lỗi phát thông báo Admin: " + e.getMessage());
+        } catch (RemoteException e) {
+            System.err.println("[ADMIN] Phát thông báo thất bại: " + e.getMessage());
         }
     }
 
     /**
-     * Ép buộc kích hoạt đồng bộ dữ liệu ngay lập tức với Server đối tác.
+     * Quản trị viên kích hoạt cưỡng chế đồng bộ lại với Server đối tác.
      */
     public void triggerForceSync() {
         if (partnerSyncStub != null) {
@@ -650,12 +924,7 @@ public class ChatServerImpl extends UnicastRemoteObject implements ChatServerInt
         }
     }
 
-    @Override
-    public boolean isPartnerServerConnected() throws RemoteException {
-        return isPartnerConnected;
-    }
-
-    public boolean isPartnerConnected() {
+    public boolean isPartnerServerConnected() {
         return isPartnerConnected;
     }
 }
